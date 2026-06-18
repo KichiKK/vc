@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Roblox Callback</title>
+</head>
+<body>
+    <p>Authentification réussie, vous pouvez fermer cette fenêtre.</p>
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const code = urlParams.get('code');
+        const state = urlParams.get('state');
+
+        if (window.opener) {
+            window.opener.postMessage({ type: 'ROBLOX_OAUTH', code, state }, '*');
+            // Give a tiny delay before closing to ensure message is sent
+            setTimeout(() => window.close(), 100);
+        } else {
+            document.body.innerHTML = '<p>Erreur: Impossible de communiquer avec la fenêtre principale.</p>';
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="fr">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VoiceChat — Vérification Email</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+
+<body>
+    <div class="bg-particles" id="particles"></div>
+
+    <div class="auth-container">
+        <div class="auth-card glass" style="max-width: 460px;">
+            <div class="logo-section">
+                <div class="logo-icon">
+                    <svg viewBox="0 0 48 48" fill="none">
+                        <circle cx="24" cy="24" r="22" stroke="url(#vGrad)" stroke-width="2.5" fill="none" />
+                        <path d="M16 24l5 5L32 18" stroke="url(#vGrad)" stroke-width="3" stroke-linecap="round"
+                            stroke-linejoin="round" fill="none" />
+                        <defs>
+                            <linearGradient id="vGrad" x1="0" y1="0" x2="48" y2="48">
+                                <stop stop-color="#4fc3f7" />
+                                <stop offset="1" stop-color="#66bb6a" />
+                            </linearGradient>
+                        </defs>
+                    </svg>
+                </div>
+                <h1 class="logo-text">Vérification Email</h1>
+            </div>
+
+            <div id="verify-status" class="verify-status">
+                <div class="loader-ring"></div>
+                <p>Vérification en cours...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        (async () => {
+            const statusEl = document.getElementById('verify-status');
+            const params = new URLSearchParams(window.location.search);
+            const token = params.get('token');
+
+            if (!token) {
+                statusEl.innerHTML = `
+          <div class="verify-error">
+            <span class="verify-icon-large">❌</span>
+            <p>Token de vérification manquant.</p>
+            <a href="/" class="btn btn-primary" style="margin-top: 16px; display: inline-block; text-decoration: none;">Retour</a>
+          </div>`;
+                return;
+            }
+
+            try {
+                const res = await fetch(`/api/auth/verify-email/${token}`);
+                const data = await res.json();
+
+                if (res.ok) {
+                    statusEl.innerHTML = `
+            <div class="verify-success">
+              <span class="verify-icon-large">✅</span>
+              <p>${data.message}</p>
+              <a href="/" class="btn btn-primary" style="margin-top: 16px; display: inline-block; text-decoration: none;">Se connecter</a>
+            </div>`;
+                } else {
+                    statusEl.innerHTML = `
+            <div class="verify-error">
+              <span class="verify-icon-large">❌</span>
+              <p>${data.error}</p>
+              <a href="/" class="btn btn-primary" style="margin-top: 16px; display: inline-block; text-decoration: none;">Retour</a>
+            </div>`;
+                }
+            } catch {
+                statusEl.innerHTML = `
+          <div class="verify-error">
+            <span class="verify-icon-large">❌</span>
+            <p>Erreur de connexion au serveur.</p>
+            <a href="/" class="btn btn-primary" style="margin-top: 16px; display: inline-block; text-decoration: none;">Retour</a>
+          </div>`;
+            }
+        })();
+    </script>
+</body>
+
+</html>
