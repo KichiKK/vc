@@ -33,45 +33,19 @@ if (localStorage.getItem('voicechat_token')) {
     window.location.href = '/chat';
 }
 
-// ── PKCE Helpers ──────────────────────────────────────────
-function generateRandomString(length) {
-    const arr = new Uint8Array(length);
-    window.crypto.getRandomValues(arr);
-    return Array.from(arr, dec => dec.toString(16).padStart(2, '0')).join('');
-}
-
-async function generatePKCE() {
-    const verifier = generateRandomString(32);
-    const encoder = new TextEncoder();
-    const data = encoder.encode(verifier);
-    const hash = await window.crypto.subtle.digest('SHA-256', data);
-    const challenge = btoa(String.fromCharCode(...new Uint8Array(hash)))
-        .replace(/\+/g, '-')
-        .replace(/\//g, '_')
-        .replace(/=+$/, '');
-    return { verifier, challenge };
-}
-
 // ── Register ──────────────────────────────────────────────
+let pendingEmail = null;
+
 document.getElementById('register-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = document.getElementById('register-btn');
-    const robloxId = document.getElementById('reg-roblox-id').value;
-    const robloxUsername = document.getElementById('reg-roblox-username').value;
-
-    if (!robloxId || !robloxUsername) {
-        showMessage('Veuillez lier votre compte Roblox avant de créer le compte.', 'error');
-        return;
-    }
-
     setLoading(btn, true);
 
     const body = {
         email: document.getElementById('reg-email').value.trim(),
         password: document.getElementById('reg-password').value,
         pseudo: document.getElementById('reg-pseudo').value.trim(),
-        roblox_username: robloxUsername,
-        roblox_id: robloxId
+        roblox_username: document.getElementById('reg-roblox').value.trim()
     };
 
     try {
@@ -89,16 +63,13 @@ document.getElementById('register-form').addEventListener('submit', async (e) =>
             return;
         }
 
-        showMessage('Compte créé ! Veuillez vérifier votre email.', 'success');
-        document.getElementById('register-form').reset();
+        pendingEmail = body.email;
+        showMessage('Compte créé ! Vérifiez votre email puis votre compte Roblox.', 'success');
 
-        // Reset Roblox button
-        const robloxBtn = document.getElementById('link-roblox-btn');
-        robloxBtn.style = '';
-        robloxBtn.className = 'btn btn-secondary';
-        document.getElementById('link-roblox-text').textContent = 'Lier le compte Roblox (Requis)';
-        document.getElementById('reg-roblox-id').value = '';
-        document.getElementById('reg-roblox-username').value = '';
+        if (data.roblox_verification_code) {
+            document.getElementById('roblox-code').textContent = data.roblox_verification_code;
+            document.getElementById('roblox-verify-section').classList.remove('hidden');
+        }
 
     } catch {
         showMessage('Erreur de connexion au serveur', 'error');
@@ -107,76 +78,34 @@ document.getElementById('register-form').addEventListener('submit', async (e) =>
     setLoading(btn, false);
 });
 
-// ── Link Roblox (OAuth2) ──────────────────────────────────
-document.getElementById('link-roblox-btn')?.addEventListener('click', async () => {
-    const btn = document.getElementById('link-roblox-btn');
+// ── Verify Roblox ─────────────────────────────────────────
+document.getElementById('verify-roblox-btn')?.addEventListener('click', async () => {
+    const btn = document.getElementById('verify-roblox-btn');
     setLoading(btn, true);
 
     try {
-        const res = await fetch(`${API}/api/auth/roblox-config`);
-        const config = await res.json();
+        const res = await fetch(`${API}/api/auth/verify-roblox`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: pendingEmail })
+        });
 
-        if (!config.clientId) {
-            showMessage('Application Roblox non configurée. Vérifiez le backend.', 'error');
-            setLoading(btn, false);
-            return;
-        }
+        const data = await res.json();
 
-        const pkce = await generatePKCE();
-        const state = generateRandomString(16);
-
-        sessionStorage.setItem('oauth_verifier', pkce.verifier);
-        sessionStorage.setItem('oauth_state', state);
-
-        const authUrl = `https://apis.roblox.com/oauth/v1/authorize?client_id=${config.clientId}&redirect_uri=${encodeURIComponent(config.redirectUri)}&scope=openid profile&response_type=code&state=${state}&code_challenge=${pkce.challenge}&code_challenge_method=S256`;
-
-        window.open(authUrl, 'robloxLogin', 'width=500,height=600');
-    } catch {
-        showMessage('Erreur de configuration Roblox', 'error');
-    }
-    setLoading(btn, false);
-});
-
-window.addEventListener('message', async (event) => {
-    if (event.data && event.data.type === 'ROBLOX_OAUTH') {
-        const { code, state } = event.data;
-        const savedState = sessionStorage.getItem('oauth_state');
-        const savedVerifier = sessionStorage.getItem('oauth_verifier');
-
-        if (state !== savedState) {
-            showMessage('Session expirée ou invalide', 'error');
-            return;
-        }
-
-        const btn = document.getElementById('link-roblox-btn');
-        setLoading(btn, true);
-
-        try {
-            const res = await fetch(`${API}/api/auth/roblox-exchange`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ code, code_verifier: savedVerifier })
-            });
-            const data = await res.json();
-
-            if (res.ok) {
-                document.getElementById('reg-roblox-id').value = data.roblox_id;
-                document.getElementById('reg-roblox-username').value = data.roblox_username;
-
-                btn.className = 'btn';
-                btn.style.backgroundColor = 'rgba(102, 187, 106, 0.15)';
-                btn.style.color = '#66bb6a';
-                btn.style.border = '1px solid #66bb6a';
-                document.getElementById('link-roblox-text').textContent = `Connecté : ${data.roblox_username}`;
-                showMessage('Compte Roblox lié avec succès !', 'success');
-            } else {
-                showMessage(data.error || 'Erreur lors de la liaison', 'error');
+        if (res.ok) {
+            showMessage(data.message, 'success');
+            document.getElementById('roblox-verify-section').classList.add('hidden');
+        } else {
+            showMessage(data.error, 'error');
+            if (data.code) {
+                document.getElementById('roblox-code').textContent = data.code;
             }
-        } catch {
-            showMessage("Erreur serveur lors de l'échange de code", 'error');
         }
-        setLoading(btn, false);
+    } catch {
+        showMessage('Erreur de connexion au serveur', 'error');
     }
+
+    setLoading(btn, false);
 });
 
 // ── Login ─────────────────────────────────────────────────
@@ -200,7 +129,14 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
         const data = await res.json();
 
         if (!res.ok) {
-            showMessage(data.error, 'error');
+            if (data.need_roblox_verification) {
+                pendingEmail = body.email;
+                document.getElementById('roblox-code').textContent = data.roblox_verification_code;
+                document.getElementById('roblox-verify-section').classList.remove('hidden');
+                showMessage(data.error, 'info');
+            } else {
+                showMessage(data.error, 'error');
+            }
             setLoading(btn, false);
             return;
         }

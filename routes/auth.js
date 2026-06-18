@@ -58,13 +58,25 @@ function dbRun(sql, params = []) {
     saveDB();
 }
 
+const COMMON_WORDS = [
+    'pomme', 'arbre', 'soleil', 'maison', 'chat', 'chien', 'voiture', 'fleur', 'livre', 'chaise',
+    'table', 'porte', 'fenetre', 'route', 'ciel', 'mer', 'montagne', 'foret', 'riviere', 'pont',
+    'oiseau', 'poisson', 'lune', 'etoile', 'nuage', 'pluie', 'neige', 'vent', 'feu', 'terre',
+    'herbe', 'sable', 'rocher', 'chemin', 'ville', 'village', 'rue', 'place', 'lumiere', 'ombre'
+];
+
+function generateWordPhrase(count = 6) {
+    const shuffled = [...COMMON_WORDS].sort(() => 0.5 - Math.random());
+    return shuffled.slice(0, count).join(' ');
+}
+
 // ── Register ──────────────────────────────────────────────
 router.post('/register', async (req, res) => {
     try {
-        const { email, password, pseudo, roblox_username, roblox_id } = req.body;
+        const { email, password, pseudo, roblox_username } = req.body;
 
-        if (!email || !password || !pseudo || !roblox_username || !roblox_id) {
-            return res.status(400).json({ error: 'Tous les champs sont requis, veuillez lier votre compte Roblox.' });
+        if (!email || !password || !pseudo || !roblox_username) {
+            return res.status(400).json({ error: 'Tous les champs sont requis.' });
         }
 
         if (password.length < 6) {
@@ -81,13 +93,30 @@ router.post('/register', async (req, res) => {
             return res.status(409).json({ error: 'Ce compte Roblox est déjà relié à un compte' });
         }
 
+        let robloxId = null;
+        try {
+            const searchRes = await fetch(`https://users.roblox.com/v1/users/search?keyword=${encodeURIComponent(roblox_username)}&limit=10`);
+            const searchData = await searchRes.json();
+            const found = searchData.data && searchData.data.find(
+                u => u.name.toLowerCase() === roblox_username.toLowerCase()
+            );
+            if (!found) {
+                return res.status(400).json({ error: 'Nom d\'utilisateur Roblox introuvable' });
+            }
+            robloxId = String(found.id);
+        } catch (err) {
+            console.error('Roblox API error:', err);
+            return res.status(500).json({ error: 'Impossible de vérifier le compte Roblox' });
+        }
+
         const passwordHash = await bcrypt.hash(password, 12);
         const verificationToken = uuidv4();
+        const robloxCode = generateWordPhrase(6);
 
         dbRun(
-            `INSERT INTO users (email, password_hash, pseudo, roblox_username, roblox_id, verification_token, roblox_verified)
-       VALUES (?, ?, ?, ?, ?, ?, 1)`,
-            [email, passwordHash, pseudo, roblox_username, robloxId, verificationToken]
+            `INSERT INTO users (email, password_hash, pseudo, roblox_username, roblox_id, verification_token, roblox_verified, roblox_verification_code)
+       VALUES (?, ?, ?, ?, ?, ?, 0, ?)`,
+            [email, passwordHash, pseudo, roblox_username, robloxId, verificationToken, robloxCode]
         );
 
         const verifyUrl = `${process.env.BASE_URL || 'http://localhost:3000'}/verify-email?token=${verificationToken}`;
@@ -119,7 +148,8 @@ router.post('/register', async (req, res) => {
         console.log(`[DEV] Verification link: ${verifyUrl}`);
 
         res.json({
-            message: 'Compte créé ! Vérifiez votre email pour valider le compte.'
+            message: 'Compte créé ! Vérifiez votre email et votre compte Roblox.',
+            roblox_verification_code: robloxCode
         });
 
     } catch (err) {
@@ -141,59 +171,44 @@ router.get('/verify-email/:token', (req, res) => {
     res.json({ message: 'Email vérifié avec succès !' });
 });
 
-// ── Roblox OAuth2 ─────────────────────────────────────────
-
-router.get('/roblox-config', (req, res) => {
-    res.json({ 
-        clientId: process.env.ROBLOX_CLIENT_ID || '', 
-        redirectUri: `${process.env.BASE_URL || 'http://localhost:3000'}/roblox-callback.html` 
-    });
-});
-
-router.post('/roblox-exchange', async (req, res) => {
+// ── Verify Roblox ─────────────────────────────────────────
+router.post('/verify-roblox', async (req, res) => {
     try {
-        const { code, code_verifier } = req.body;
-        if (!code || !code_verifier) return res.status(400).json({ error: 'Requête invalide' });
-
-        const clientId = process.env.ROBLOX_CLIENT_ID;
-        const clientSecret = process.env.ROBLOX_CLIENT_SECRET;
-        
-        if (!clientId || !clientSecret) {
-            return res.status(500).json({ error: 'Application Roblox non configurée dans le backend' });
+        const { email } = req.body;
+        if (!email) {
+            return res.status(400).json({ error: 'Email requis' });
         }
 
-        const authHeader = 'Basic ' + Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
-        const tokenRes = await fetch('https://apis.roblox.com/oauth/v1/token', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'Authorization': authHeader
-            },
-            body: new URLSearchParams({
-                grant_type: 'authorization_code',
-                code,
-                code_verifier,
-                client_id: clientId
-            })
-        });
+        const user = dbGet('SELECT * FROM users WHERE email = ?', [email]);
+        if (!user) {
+            return res.status(404).json({ error: 'Utilisateur introuvable' });
+        }
 
-        const tokenData = await tokenRes.json();
-        if (!tokenRes.ok) throw new Error(tokenData.error_description || 'Échec token Roblox');
+        if (user.roblox_verified) {
+            return res.json({ message: 'Compte Roblox déjà vérifié' });
+        }
 
-        const userRes = await fetch('https://apis.roblox.com/oauth/v1/userinfo', {
-            headers: { 'Authorization': `Bearer ${tokenData.access_token}` }
-        });
-        const userData = await userRes.json();
-        if (!userRes.ok) throw new Error('Échec userInfo');
+        try {
+            const profileRes = await fetch(`https://users.roblox.com/v1/users/${user.roblox_id}`);
+            const profileData = await profileRes.json();
 
-        res.json({
-            roblox_id: userData.sub,
-            roblox_username: userData.preferred_username || userData.name
-        });
+            if (profileData.description && profileData.description.includes(user.roblox_verification_code)) {
+                dbRun('UPDATE users SET roblox_verified = 1, roblox_verification_code = NULL WHERE id = ?', [user.id]);
+                return res.json({ message: 'Compte Roblox vérifié avec succès !' });
+            } else {
+                return res.status(400).json({
+                    error: 'Code de vérification non trouvé dans la description de votre profil Roblox',
+                    code: user.roblox_verification_code
+                });
+            }
+        } catch (err) {
+            console.error('Roblox verify error:', err);
+            return res.status(500).json({ error: 'Impossible de vérifier le profil Roblox' });
+        }
 
     } catch (err) {
-        console.error('Roblox exchange error:', err);
-        res.status(500).json({ error: 'Impossible de se lier avec Roblox' });
+        console.error('Verify roblox error:', err);
+        res.status(500).json({ error: 'Erreur serveur' });
     }
 });
 
@@ -222,7 +237,9 @@ router.post('/login', async (req, res) => {
 
         if (!user.roblox_verified) {
             return res.status(403).json({
-                error: 'Compte Roblox non lié.'
+                error: 'Veuillez d\'abord vérifier votre compte Roblox',
+                roblox_verification_code: user.roblox_verification_code,
+                need_roblox_verification: true
             });
         }
 

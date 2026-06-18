@@ -79,21 +79,30 @@
             <label for="reg-pseudo">Pseudo</label>
             <div class="input-line"></div>
           </div>
-
-          <div style="margin-bottom: 20px;">
-            <button type="button" class="btn btn-secondary" id="link-roblox-btn">
-              <span id="link-roblox-text">Lier le compte Roblox (Requis)</span>
-              <div class="btn-loader"></div>
-            </button>
-            <input type="hidden" id="reg-roblox-id">
-            <input type="hidden" id="reg-roblox-username">
+          <div class="input-group">
+            <input type="text" id="reg-roblox" placeholder=" " required>
+            <label for="reg-roblox">Pseudo Roblox</label>
+            <div class="input-line"></div>
           </div>
-
           <button type="submit" class="btn btn-primary" id="register-btn">
             <span>Créer un compte</span>
             <div class="btn-loader"></div>
           </button>
         </form>
+      </div>
+
+      <div id="roblox-verify-section" class="verify-section hidden">
+        <div class="verify-card glass">
+          <div class="verify-icon">🎮</div>
+          <h3>Vérification Roblox</h3>
+          <p>Ajoutez cette phrase dans la description de votre profil Roblox :</p>
+          <div class="code-display" id="roblox-code" style="font-size: 1.2rem; padding: 15px; margin: 20px 0;"></div>
+          <p class="verify-hint">Puis cliquez sur le bouton ci-dessous pour vérifier</p>
+          <button class="btn btn-secondary" id="verify-roblox-btn">
+            <span>Vérifier mon compte Roblox</span>
+            <div class="btn-loader"></div>
+          </button>
+        </div>
       </div>
 
 
