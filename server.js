@@ -34,6 +34,14 @@ async function start() {
         res.sendFile(path.join(__dirname, 'public', 'chat.html'));
     });
 
+    app.get('/terms', (req, res) => {
+        res.sendFile(path.join(__dirname, 'public', 'terms.html'));
+    });
+
+    app.get('/privacypolicy', (req, res) => {
+        res.sendFile(path.join(__dirname, 'public', 'privacypolicy.html'));
+    });
+
     setupSignaling(io);
 
     const PORT = process.env.PORT || 3000;
