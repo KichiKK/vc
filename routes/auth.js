@@ -55,7 +55,24 @@ function dbGet(sql, params = []) {
 function dbRun(sql, params = []) {
     const db = getDB();
     db.run(sql, params);
+    const rowsModified = db.getRowsModified();
     saveDB();
+    return rowsModified;
+}
+
+function requireResetToken(req, res, next) {
+    const resetToken = process.env.RESET_TOKEN;
+    const providedToken = req.headers['x-reset-token'] || req.body?.resetToken;
+
+    if (!resetToken) {
+        return res.status(403).json({ error: 'Reset désactivé : RESET_TOKEN n\'est pas configuré.' });
+    }
+
+    if (!providedToken || providedToken !== resetToken) {
+        return res.status(403).json({ error: 'Token de reset invalide.' });
+    }
+
+    next();
 }
 
 const COMMON_WORDS = [
@@ -71,9 +88,27 @@ function generateWordPhrase(count = 6) {
 }
 
 // ── Register ──────────────────────────────────────────────
+router.post('/reset-users', requireResetToken, (req, res) => {
+    try {
+        const deletedUsers = dbRun('DELETE FROM users');
+        dbRun('DELETE FROM sqlite_sequence WHERE name = ?', ['users']);
+
+        res.json({
+            message: 'Utilisateurs supprimés avec succès.',
+            deletedUsers
+        });
+    } catch (err) {
+        console.error('Reset users error:', err);
+        res.status(500).json({ error: 'Impossible de réinitialiser les utilisateurs.' });
+    }
+});
+
 router.post('/register', async (req, res) => {
     try {
-        const { email, password, pseudo, roblox_username } = req.body;
+        const email = req.body.email?.trim().toLowerCase();
+        const password = req.body.password;
+        const pseudo = req.body.pseudo?.trim();
+        const roblox_username = req.body.roblox_username?.trim();
 
         if (!email || !password || !pseudo || !roblox_username) {
             return res.status(400).json({ error: 'Tous les champs sont requis.' });
@@ -206,7 +241,7 @@ router.get('/verify-email/:token', (req, res) => {
 // ── Verify Roblox ─────────────────────────────────────────
 router.post('/verify-roblox', async (req, res) => {
     try {
-        const { email } = req.body;
+        const email = req.body.email?.trim().toLowerCase();
         if (!email) {
             return res.status(400).json({ error: 'Email requis' });
         }
@@ -252,7 +287,8 @@ router.post('/verify-roblox', async (req, res) => {
 // ── Login ─────────────────────────────────────────────────
 router.post('/login', async (req, res) => {
     try {
-        const { email, password } = req.body;
+        const email = req.body.email?.trim().toLowerCase();
+        const password = req.body.password;
 
         if (!email || !password) {
             return res.status(400).json({ error: 'Email et mot de passe requis' });
