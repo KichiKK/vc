@@ -1,4 +1,42 @@
-const API = '';
+const API = (() => {
+    if (window.VOICECHAT_API_URL) {
+        return window.VOICECHAT_API_URL.replace(/\/$/, '');
+    }
+
+    if (window.location.protocol === 'file:') {
+        return 'http://localhost:3000';
+    }
+
+    if (
+        ['localhost', '127.0.0.1'].includes(window.location.hostname) &&
+        window.location.port &&
+        window.location.port !== '3000'
+    ) {
+        return 'http://localhost:3000';
+    }
+
+    return '';
+})();
+
+async function apiRequest(path, options = {}) {
+    const res = await fetch(`${API}${path}`, options);
+    const text = await res.text();
+    let data = {};
+
+    if (text) {
+        try {
+            data = JSON.parse(text);
+        } catch {
+            data = {
+                error: res.ok
+                    ? text
+                    : `Le serveur a renvoye une reponse inattendue (${res.status}).`
+            };
+        }
+    }
+
+    return { res, data };
+}
 
 function showMessage(text, type = 'error') {
     const box = document.getElementById('message-box');
@@ -49,16 +87,14 @@ document.getElementById('register-form').addEventListener('submit', async (e) =>
     };
 
     try {
-        const res = await fetch(`${API}/api/auth/register`, {
+        const { res, data } = await apiRequest('/api/auth/register', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
         });
 
-        const data = await res.json();
-
         if (!res.ok) {
-            showMessage(data.error, 'error');
+            showMessage(data.error || 'Inscription impossible pour le moment.', 'error');
             setLoading(btn, false);
             return;
         }
@@ -71,7 +107,8 @@ document.getElementById('register-form').addEventListener('submit', async (e) =>
             document.getElementById('roblox-verify-section').classList.remove('hidden');
         }
 
-    } catch {
+    } catch (err) {
+        console.error('Register request failed:', err);
         showMessage('Erreur de connexion au serveur', 'error');
     }
 
@@ -84,24 +121,23 @@ document.getElementById('verify-roblox-btn')?.addEventListener('click', async ()
     setLoading(btn, true);
 
     try {
-        const res = await fetch(`${API}/api/auth/verify-roblox`, {
+        const { res, data } = await apiRequest('/api/auth/verify-roblox', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email: pendingEmail })
         });
 
-        const data = await res.json();
-
         if (res.ok) {
             showMessage(data.message, 'success');
             document.getElementById('roblox-verify-section').classList.add('hidden');
         } else {
-            showMessage(data.error, 'error');
+            showMessage(data.error || 'Verification Roblox impossible pour le moment.', 'error');
             if (data.code) {
                 document.getElementById('roblox-code').textContent = data.code;
             }
         }
-    } catch {
+    } catch (err) {
+        console.error('Roblox verification request failed:', err);
         showMessage('Erreur de connexion au serveur', 'error');
     }
 
@@ -120,13 +156,11 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
     };
 
     try {
-        const res = await fetch(`${API}/api/auth/login`, {
+        const { res, data } = await apiRequest('/api/auth/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
         });
-
-        const data = await res.json();
 
         if (!res.ok) {
             if (data.need_roblox_verification) {
@@ -135,7 +169,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
                 document.getElementById('roblox-verify-section').classList.remove('hidden');
                 showMessage(data.error, 'info');
             } else {
-                showMessage(data.error, 'error');
+                showMessage(data.error || 'Connexion impossible pour le moment.', 'error');
             }
             setLoading(btn, false);
             return;
@@ -145,7 +179,8 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
         localStorage.setItem('voicechat_user', JSON.stringify(data.user));
         window.location.href = '/chat';
 
-    } catch {
+    } catch (err) {
+        console.error('Login request failed:', err);
         showMessage('Erreur de connexion au serveur', 'error');
     }
 
