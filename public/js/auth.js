@@ -109,7 +109,7 @@ document.getElementById('register-form').addEventListener('submit', async (e) =>
             return;
         }
 
-        pendingEmail = body.email;
+        pendingEmail = body.email.toLowerCase();
         showMessage('Compte créé ! Vérifiez votre email puis votre compte Roblox.', 'success');
 
         if (data.roblox_verification_code) {
@@ -128,6 +128,12 @@ document.getElementById('register-form').addEventListener('submit', async (e) =>
 // ── Verify Roblox ─────────────────────────────────────────
 document.getElementById('verify-roblox-btn')?.addEventListener('click', async () => {
     const btn = document.getElementById('verify-roblox-btn');
+
+    if (!pendingEmail) {
+        showMessage('Créez un compte ou connectez-vous avant de vérifier Roblox.', 'error');
+        return;
+    }
+
     setLoading(btn, true);
 
     try {
@@ -174,7 +180,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
 
         if (!res.ok) {
             if (data.need_roblox_verification) {
-                pendingEmail = body.email;
+                pendingEmail = body.email.toLowerCase();
                 document.getElementById('roblox-code').textContent = data.roblox_verification_code;
                 document.getElementById('roblox-verify-section').classList.remove('hidden');
                 showMessage(data.error, 'info');

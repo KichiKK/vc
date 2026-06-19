@@ -11,11 +11,96 @@ const transporter = nodemailer.createTransport({
     host: process.env.SMTP_HOST || 'smtp.gmail.com',
     port: parseInt(process.env.SMTP_PORT || '587'),
     secure: false,
+    connectionTimeout: 5000,
+    greetingTimeout: 5000,
+    socketTimeout: 8000,
     auth: {
         user: process.env.SMTP_USER,
         pass: process.env.SMTP_PASS
     }
 });
+
+async function fetchJson(url, options = {}, timeoutMs = 5000) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+        const res = await fetch(url, {
+            ...options,
+            signal: controller.signal
+        });
+        const data = await res.json().catch(() => null);
+        return { res, data };
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
+async function findRobloxUser(username) {
+    const normalizedUsername = username.trim().toLowerCase();
+
+    const usernameLookup = await fetchJson('https://users.roblox.com/v1/usernames/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            usernames: [username],
+            excludeBannedUsers: false
+        })
+    }, 4500);
+
+    if (usernameLookup.res.ok && usernameLookup.data?.data?.length) {
+        const found = usernameLookup.data.data.find(
+            user => user.name?.toLowerCase() === normalizedUsername
+        );
+
+        if (found) {
+            return found;
+        }
+    }
+
+    const searchLookup = await fetchJson(
+        `https://users.roblox.com/v1/users/search?keyword=${encodeURIComponent(username)}&limit=10`,
+        {},
+        4500
+    );
+
+    if (!searchLookup.res.ok) {
+        throw new Error(`Roblox API HTTP ${searchLookup.res.status}`);
+    }
+
+    return searchLookup.data?.data?.find(
+        user => user.name?.toLowerCase() === normalizedUsername
+    ) || null;
+}
+
+function sendVerificationEmail({ email, pseudo, verifyUrl }) {
+    if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
+        console.log(`[DEV] SMTP non configuré. Verification link: ${verifyUrl}`);
+        return;
+    }
+
+    transporter.sendMail({
+        from: process.env.SMTP_USER,
+        to: email,
+        subject: 'VoiceChat — Vérifiez votre email',
+        html: `
+          <div style="font-family: 'Segoe UI', sans-serif; max-width: 500px; margin: 0 auto; padding: 30px; background: #1a1a2e; color: #e0e0e0; border-radius: 12px;">
+            <h2 style="color: #4fc3f7; text-align: center;">VoiceChat</h2>
+            <p>Bonjour <strong>${pseudo}</strong>,</p>
+            <p>Cliquez sur le bouton ci-dessous pour vérifier votre adresse email :</p>
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="${verifyUrl}" style="background: linear-gradient(135deg, #4fc3f7, #2196f3); color: white; padding: 14px 40px; border-radius: 8px; text-decoration: none; font-weight: bold; display: inline-block;">
+                Vérifier mon email
+              </a>
+            </div>
+            <p style="font-size: 12px; color: #888;">Si vous n'avez pas créé de compte, ignorez cet email.</p>
+          </div>
+        `
+    }).catch(emailErr => {
+        console.error('[Email] Sending failed:', emailErr);
+        console.log(`[DEV] Verification link: ${verifyUrl}`);
+    });
+}
 
 function generateToken(user) {
     return jwt.sign(
@@ -136,43 +221,17 @@ router.post('/register', async (req, res) => {
             return res.status(409).json({ error: 'Ce compte Roblox est déjà relié à un compte' });
         }
 
-        // Verify Roblox username exists via the public usernames endpoint (no auth required)
         let robloxId = null;
         try {
-            const robloxRes = await fetch('https://users.roblox.com/v1/usernames/users', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    usernames: [roblox_username],
-                    excludeBannedUsers: false
-                })
-            });
-
-            if (!robloxRes.ok) {
-                console.error('[Roblox API] HTTP error:', robloxRes.status);
-                return res.status(500).json({ error: 'Impossible de vérifier le compte Roblox (API indisponible)' });
-            }
-
-            const robloxData = await robloxRes.json();
-
-            if (!robloxData.data || robloxData.data.length === 0) {
-                return res.status(400).json({ error: 'Nom d\'utilisateur Roblox introuvable' });
-            }
-
-            // Find case-insensitive match
-            const found = robloxData.data.find(
-                u => u.name.toLowerCase() === roblox_username.toLowerCase()
-            );
-
+            const found = await findRobloxUser(roblox_username);
             if (!found) {
                 return res.status(400).json({ error: 'Nom d\'utilisateur Roblox introuvable' });
             }
 
             robloxId = String(found.id);
-
         } catch (err) {
             console.error('[Roblox API] Fetch error:', err);
-            return res.status(500).json({ error: 'Impossible de vérifier le compte Roblox' });
+            return res.status(504).json({ error: 'Roblox met trop de temps a repondre. Reessayez dans quelques secondes.' });
         }
 
         const passwordHash = await bcrypt.hash(password, 12);
@@ -186,32 +245,7 @@ router.post('/register', async (req, res) => {
         );
 
         const verifyUrl = `${process.env.BASE_URL || 'http://localhost:3000'}/verify-email?token=${verificationToken}`;
-
-        try {
-            await transporter.sendMail({
-                from: process.env.SMTP_USER,
-                to: email,
-                subject: 'VoiceChat — Vérifiez votre email',
-                html: `
-          <div style="font-family: 'Segoe UI', sans-serif; max-width: 500px; margin: 0 auto; padding: 30px; background: #1a1a2e; color: #e0e0e0; border-radius: 12px;">
-            <h2 style="color: #4fc3f7; text-align: center;">VoiceChat</h2>
-            <p>Bonjour <strong>${pseudo}</strong>,</p>
-            <p>Cliquez sur le bouton ci-dessous pour vérifier votre adresse email :</p>
-            <div style="text-align: center; margin: 30px 0;">
-              <a href="${verifyUrl}" style="background: linear-gradient(135deg, #4fc3f7, #2196f3); color: white; padding: 14px 40px; border-radius: 8px; text-decoration: none; font-weight: bold; display: inline-block;">
-                Vérifier mon email
-              </a>
-            </div>
-            <p style="font-size: 12px; color: #888;">Si vous n'avez pas créé de compte, ignorez cet email.</p>
-          </div>
-        `
-            });
-        } catch (emailErr) {
-            console.error('[Email] Sending failed:', emailErr);
-            // Log the link in dev so registration doesn't fail silently
-            console.log(`[DEV] Verification link: ${verifyUrl}`);
-        }
-
+        sendVerificationEmail({ email, pseudo, verifyUrl });
         console.log(`[DEV] Verification link: ${verifyUrl}`);
 
         res.json({
@@ -256,13 +290,15 @@ router.post('/verify-roblox', async (req, res) => {
         }
 
         try {
-            const profileRes = await fetch(`https://users.roblox.com/v1/users/${user.roblox_id}`);
+            const { res: profileRes, data: profileData } = await fetchJson(
+                `https://users.roblox.com/v1/users/${user.roblox_id}`,
+                {},
+                4500
+            );
 
             if (!profileRes.ok) {
                 return res.status(500).json({ error: 'Impossible de récupérer le profil Roblox' });
             }
-
-            const profileData = await profileRes.json();
 
             if (profileData.description && profileData.description.includes(user.roblox_verification_code)) {
                 dbRun('UPDATE users SET roblox_verified = 1, roblox_verification_code = NULL WHERE id = ?', [user.id]);
