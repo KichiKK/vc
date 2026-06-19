@@ -83,29 +83,60 @@ router.post('/register', async (req, res) => {
             return res.status(400).json({ error: 'Le mot de passe doit contenir au moins 6 caractères' });
         }
 
+        // Check email uniqueness
         const existingEmail = dbGet('SELECT id FROM users WHERE email = ?', [email]);
         if (existingEmail) {
             return res.status(409).json({ error: 'Cette adresse email est déjà utilisée' });
         }
 
-        const existingRoblox = dbGet('SELECT id FROM users WHERE roblox_username = ?', [roblox_username]);
+        // Check pseudo uniqueness
+        const existingPseudo = dbGet('SELECT id FROM users WHERE LOWER(pseudo) = LOWER(?)', [pseudo]);
+        if (existingPseudo) {
+            return res.status(409).json({ error: 'Ce pseudo est déjà utilisé' });
+        }
+
+        // Check Roblox username uniqueness
+        const existingRoblox = dbGet('SELECT id FROM users WHERE LOWER(roblox_username) = LOWER(?)', [roblox_username]);
         if (existingRoblox) {
             return res.status(409).json({ error: 'Ce compte Roblox est déjà relié à un compte' });
         }
 
+        // Verify Roblox username exists via the public usernames endpoint (no auth required)
         let robloxId = null;
         try {
-            const searchRes = await fetch(`https://users.roblox.com/v1/users/search?keyword=${encodeURIComponent(roblox_username)}&limit=10`);
-            const searchData = await searchRes.json();
-            const found = searchData.data && searchData.data.find(
+            const robloxRes = await fetch('https://users.roblox.com/v1/usernames/users', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    usernames: [roblox_username],
+                    excludeBannedUsers: false
+                })
+            });
+
+            if (!robloxRes.ok) {
+                console.error('[Roblox API] HTTP error:', robloxRes.status);
+                return res.status(500).json({ error: 'Impossible de vérifier le compte Roblox (API indisponible)' });
+            }
+
+            const robloxData = await robloxRes.json();
+
+            if (!robloxData.data || robloxData.data.length === 0) {
+                return res.status(400).json({ error: 'Nom d\'utilisateur Roblox introuvable' });
+            }
+
+            // Find case-insensitive match
+            const found = robloxData.data.find(
                 u => u.name.toLowerCase() === roblox_username.toLowerCase()
             );
+
             if (!found) {
                 return res.status(400).json({ error: 'Nom d\'utilisateur Roblox introuvable' });
             }
+
             robloxId = String(found.id);
+
         } catch (err) {
-            console.error('Roblox API error:', err);
+            console.error('[Roblox API] Fetch error:', err);
             return res.status(500).json({ error: 'Impossible de vérifier le compte Roblox' });
         }
 
@@ -141,7 +172,8 @@ router.post('/register', async (req, res) => {
         `
             });
         } catch (emailErr) {
-            console.error('Email sending failed:', emailErr);
+            console.error('[Email] Sending failed:', emailErr);
+            // Log the link in dev so registration doesn't fail silently
             console.log(`[DEV] Verification link: ${verifyUrl}`);
         }
 
@@ -164,7 +196,7 @@ router.get('/verify-email/:token', (req, res) => {
     const user = dbGet('SELECT id FROM users WHERE verification_token = ?', [token]);
 
     if (!user) {
-        return res.status(400).json({ error: 'Token de vérification invalide' });
+        return res.status(400).json({ error: 'Token de vérification invalide ou déjà utilisé' });
     }
 
     dbRun('UPDATE users SET email_verified = 1, verification_token = NULL WHERE id = ?', [user.id]);
@@ -190,6 +222,11 @@ router.post('/verify-roblox', async (req, res) => {
 
         try {
             const profileRes = await fetch(`https://users.roblox.com/v1/users/${user.roblox_id}`);
+
+            if (!profileRes.ok) {
+                return res.status(500).json({ error: 'Impossible de récupérer le profil Roblox' });
+            }
+
             const profileData = await profileRes.json();
 
             if (profileData.description && profileData.description.includes(user.roblox_verification_code)) {
@@ -202,7 +239,7 @@ router.post('/verify-roblox', async (req, res) => {
                 });
             }
         } catch (err) {
-            console.error('Roblox verify error:', err);
+            console.error('[Roblox verify] Error:', err);
             return res.status(500).json({ error: 'Impossible de vérifier le profil Roblox' });
         }
 
