@@ -77,4 +77,5 @@ class SpatialAudio {
     }
 }
 
+
 window.spatialAudio = new SpatialAudio();
