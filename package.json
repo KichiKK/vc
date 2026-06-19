@@ -5,7 +5,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "deploy": "wrangler deploy",
+    "preview": "wrangler dev"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -17,5 +19,8 @@
     "socket.io": "^4.8.1",
     "sql.js": "^1.11.0",
     "uuid": "^11.0.5"
+  },
+  "devDependencies": {
+    "wrangler": "^4.102.0"
   }
 }
