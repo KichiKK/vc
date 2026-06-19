@@ -40,6 +40,7 @@
         </div>
     </div>
 
+    <script src="/js/config.js"></script>
     <script>
         (async () => {
             const API = (() => {
@@ -59,10 +60,20 @@
                     return 'http://localhost:3000';
                 }
 
+                if (window.location.hostname.endsWith('.workers.dev')) {
+                    return null;
+                }
+
                 return '';
             })();
 
             async function apiRequest(path) {
+                if (API === null) {
+                    throw new Error(
+                        'API non configuree : renseignez window.VOICECHAT_API_URL dans /js/config.js avec l URL de votre serveur Node.'
+                    );
+                }
+
                 const res = await fetch(`${API}${path}`);
                 const text = await res.text();
                 let data = {};
@@ -119,7 +130,7 @@
                 statusEl.innerHTML = `
           <div class="verify-error">
             <span class="verify-icon-large">❌</span>
-            <p>Erreur de connexion au serveur.</p>
+            <p>${err.message || 'Erreur de connexion au serveur.'}</p>
             <a href="/" class="btn btn-primary" style="margin-top: 16px; display: inline-block; text-decoration: none;">Retour</a>
           </div>`;
             }

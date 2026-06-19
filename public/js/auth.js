@@ -1,188 +1,311 @@
-const API = (() => {
-    if (window.VOICECHAT_API_URL) {
-        return window.VOICECHAT_API_URL.replace(/\/$/, '');
+const express = require('express');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const { v4: uuidv4 } = require('uuid');
+const nodemailer = require('nodemailer');
+const { getDB, saveDB } = require('../db');
+
+const router = express.Router();
+
+const transporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST || 'smtp.gmail.com',
+    port: parseInt(process.env.SMTP_PORT || '587'),
+    secure: false,
+    auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS
     }
-
-    if (window.location.protocol === 'file:') {
-        return 'http://localhost:3000';
-    }
-
-    if (
-        ['localhost', '127.0.0.1'].includes(window.location.hostname) &&
-        window.location.port &&
-        window.location.port !== '3000'
-    ) {
-        return 'http://localhost:3000';
-    }
-
-    return '';
-})();
-
-async function apiRequest(path, options = {}) {
-    const res = await fetch(`${API}${path}`, options);
-    const text = await res.text();
-    let data = {};
-
-    if (text) {
-        try {
-            data = JSON.parse(text);
-        } catch {
-            data = {
-                error: res.ok
-                    ? text
-                    : `Le serveur a renvoye une reponse inattendue (${res.status}).`
-            };
-        }
-    }
-
-    return { res, data };
-}
-
-function showMessage(text, type = 'error') {
-    const box = document.getElementById('message-box');
-    box.textContent = text;
-    box.className = `message-box ${type}`;
-    box.classList.remove('hidden');
-    setTimeout(() => box.classList.add('hidden'), 5000);
-}
-
-function setLoading(btn, loading) {
-    if (loading) {
-        btn.classList.add('loading');
-        btn.disabled = true;
-    } else {
-        btn.classList.remove('loading');
-        btn.disabled = false;
-    }
-}
-
-// Tab switching
-document.querySelectorAll('.tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-        btn.classList.add('active');
-        document.getElementById(`${btn.dataset.tab}-tab`).classList.add('active');
-    });
 });
 
-// Check if already logged in
-if (localStorage.getItem('voicechat_token')) {
-    window.location.href = '/chat';
+function generateToken(user) {
+    return jwt.sign(
+        { id: user.id, pseudo: user.pseudo, roblox_username: user.roblox_username },
+        process.env.JWT_SECRET || 'dev-secret',
+        { expiresIn: '7d' }
+    );
+}
+
+function authMiddleware(req, res, next) {
+    const header = req.headers.authorization;
+    if (!header || !header.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'Token manquant' });
+    }
+    try {
+        const decoded = jwt.verify(header.split(' ')[1], process.env.JWT_SECRET || 'dev-secret');
+        req.user = decoded;
+        next();
+    } catch {
+        return res.status(401).json({ error: 'Token invalide' });
+    }
+}
+
+function dbGet(sql, params = []) {
+    const db = getDB();
+    const stmt = db.prepare(sql);
+    stmt.bind(params);
+    if (stmt.step()) {
+        const row = stmt.getAsObject();
+        stmt.free();
+        return row;
+    }
+    stmt.free();
+    return null;
+}
+
+function dbRun(sql, params = []) {
+    const db = getDB();
+    db.run(sql, params);
+    saveDB();
+}
+
+const COMMON_WORDS = [
+    'pomme', 'arbre', 'soleil', 'maison', 'chat', 'chien', 'voiture', 'fleur', 'livre', 'chaise',
+    'table', 'porte', 'fenetre', 'route', 'ciel', 'mer', 'montagne', 'foret', 'riviere', 'pont',
+    'oiseau', 'poisson', 'lune', 'etoile', 'nuage', 'pluie', 'neige', 'vent', 'feu', 'terre',
+    'herbe', 'sable', 'rocher', 'chemin', 'ville', 'village', 'rue', 'place', 'lumiere', 'ombre'
+];
+
+function generateWordPhrase(count = 6) {
+    const shuffled = [...COMMON_WORDS].sort(() => 0.5 - Math.random());
+    return shuffled.slice(0, count).join(' ');
 }
 
 // ── Register ──────────────────────────────────────────────
-let pendingEmail = null;
-
-document.getElementById('register-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const btn = document.getElementById('register-btn');
-    setLoading(btn, true);
-
-    const body = {
-        email: document.getElementById('reg-email').value.trim(),
-        password: document.getElementById('reg-password').value,
-        pseudo: document.getElementById('reg-pseudo').value.trim(),
-        roblox_username: document.getElementById('reg-roblox').value.trim()
-    };
-
+router.post('/register', async (req, res) => {
     try {
-        const { res, data } = await apiRequest('/api/auth/register', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body)
+        const { email, password, pseudo, roblox_username } = req.body;
+
+        if (!email || !password || !pseudo || !roblox_username) {
+            return res.status(400).json({ error: 'Tous les champs sont requis.' });
+        }
+
+        if (password.length < 6) {
+            return res.status(400).json({ error: 'Le mot de passe doit contenir au moins 6 caractères' });
+        }
+
+        // Check email uniqueness
+        const existingEmail = dbGet('SELECT id FROM users WHERE email = ?', [email]);
+        if (existingEmail) {
+            return res.status(409).json({ error: 'Cette adresse email est déjà utilisée' });
+        }
+
+        // Check pseudo uniqueness
+        const existingPseudo = dbGet('SELECT id FROM users WHERE LOWER(pseudo) = LOWER(?)', [pseudo]);
+        if (existingPseudo) {
+            return res.status(409).json({ error: 'Ce pseudo est déjà utilisé' });
+        }
+
+        // Check Roblox username uniqueness
+        const existingRoblox = dbGet('SELECT id FROM users WHERE LOWER(roblox_username) = LOWER(?)', [roblox_username]);
+        if (existingRoblox) {
+            return res.status(409).json({ error: 'Ce compte Roblox est déjà relié à un compte' });
+        }
+
+        // Verify Roblox username exists via the public usernames endpoint (no auth required)
+        let robloxId = null;
+        try {
+            const robloxRes = await fetch('https://users.roblox.com/v1/usernames/users', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    usernames: [roblox_username],
+                    excludeBannedUsers: false
+                })
+            });
+
+            if (!robloxRes.ok) {
+                console.error('[Roblox API] HTTP error:', robloxRes.status);
+                return res.status(500).json({ error: 'Impossible de vérifier le compte Roblox (API indisponible)' });
+            }
+
+            const robloxData = await robloxRes.json();
+
+            if (!robloxData.data || robloxData.data.length === 0) {
+                return res.status(400).json({ error: 'Nom d\'utilisateur Roblox introuvable' });
+            }
+
+            // Find case-insensitive match
+            const found = robloxData.data.find(
+                u => u.name.toLowerCase() === roblox_username.toLowerCase()
+            );
+
+            if (!found) {
+                return res.status(400).json({ error: 'Nom d\'utilisateur Roblox introuvable' });
+            }
+
+            robloxId = String(found.id);
+
+        } catch (err) {
+            console.error('[Roblox API] Fetch error:', err);
+            return res.status(500).json({ error: 'Impossible de vérifier le compte Roblox' });
+        }
+
+        const passwordHash = await bcrypt.hash(password, 12);
+        const verificationToken = uuidv4();
+        const robloxCode = generateWordPhrase(6);
+
+        dbRun(
+            `INSERT INTO users (email, password_hash, pseudo, roblox_username, roblox_id, verification_token, roblox_verified, roblox_verification_code)
+       VALUES (?, ?, ?, ?, ?, ?, 0, ?)`,
+            [email, passwordHash, pseudo, roblox_username, robloxId, verificationToken, robloxCode]
+        );
+
+        const verifyUrl = `${process.env.BASE_URL || 'http://localhost:3000'}/verify-email?token=${verificationToken}`;
+
+        try {
+            await transporter.sendMail({
+                from: process.env.SMTP_USER,
+                to: email,
+                subject: 'VoiceChat — Vérifiez votre email',
+                html: `
+          <div style="font-family: 'Segoe UI', sans-serif; max-width: 500px; margin: 0 auto; padding: 30px; background: #1a1a2e; color: #e0e0e0; border-radius: 12px;">
+            <h2 style="color: #4fc3f7; text-align: center;">VoiceChat</h2>
+            <p>Bonjour <strong>${pseudo}</strong>,</p>
+            <p>Cliquez sur le bouton ci-dessous pour vérifier votre adresse email :</p>
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="${verifyUrl}" style="background: linear-gradient(135deg, #4fc3f7, #2196f3); color: white; padding: 14px 40px; border-radius: 8px; text-decoration: none; font-weight: bold; display: inline-block;">
+                Vérifier mon email
+              </a>
+            </div>
+            <p style="font-size: 12px; color: #888;">Si vous n'avez pas créé de compte, ignorez cet email.</p>
+          </div>
+        `
+            });
+        } catch (emailErr) {
+            console.error('[Email] Sending failed:', emailErr);
+            // Log the link in dev so registration doesn't fail silently
+            console.log(`[DEV] Verification link: ${verifyUrl}`);
+        }
+
+        console.log(`[DEV] Verification link: ${verifyUrl}`);
+
+        res.json({
+            message: 'Compte créé ! Vérifiez votre email et votre compte Roblox.',
+            roblox_verification_code: robloxCode
         });
 
-        if (!res.ok) {
-            showMessage(data.error || 'Inscription impossible pour le moment.', 'error');
-            setLoading(btn, false);
-            return;
-        }
-
-        pendingEmail = body.email;
-        showMessage('Compte créé ! Vérifiez votre email puis votre compte Roblox.', 'success');
-
-        if (data.roblox_verification_code) {
-            document.getElementById('roblox-code').textContent = data.roblox_verification_code;
-            document.getElementById('roblox-verify-section').classList.remove('hidden');
-        }
-
     } catch (err) {
-        console.error('Register request failed:', err);
-        showMessage('Erreur de connexion au serveur', 'error');
+        console.error('Register error:', err);
+        res.status(500).json({ error: 'Erreur serveur' });
+    }
+});
+
+// ── Verify Email ──────────────────────────────────────────
+router.get('/verify-email/:token', (req, res) => {
+    const { token } = req.params;
+    const user = dbGet('SELECT id FROM users WHERE verification_token = ?', [token]);
+
+    if (!user) {
+        return res.status(400).json({ error: 'Token de vérification invalide ou déjà utilisé' });
     }
 
-    setLoading(btn, false);
+    dbRun('UPDATE users SET email_verified = 1, verification_token = NULL WHERE id = ?', [user.id]);
+    res.json({ message: 'Email vérifié avec succès !' });
 });
 
 // ── Verify Roblox ─────────────────────────────────────────
-document.getElementById('verify-roblox-btn')?.addEventListener('click', async () => {
-    const btn = document.getElementById('verify-roblox-btn');
-    setLoading(btn, true);
-
+router.post('/verify-roblox', async (req, res) => {
     try {
-        const { res, data } = await apiRequest('/api/auth/verify-roblox', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: pendingEmail })
-        });
-
-        if (res.ok) {
-            showMessage(data.message, 'success');
-            document.getElementById('roblox-verify-section').classList.add('hidden');
-        } else {
-            showMessage(data.error || 'Verification Roblox impossible pour le moment.', 'error');
-            if (data.code) {
-                document.getElementById('roblox-code').textContent = data.code;
-            }
+        const { email } = req.body;
+        if (!email) {
+            return res.status(400).json({ error: 'Email requis' });
         }
-    } catch (err) {
-        console.error('Roblox verification request failed:', err);
-        showMessage('Erreur de connexion au serveur', 'error');
-    }
 
-    setLoading(btn, false);
+        const user = dbGet('SELECT * FROM users WHERE email = ?', [email]);
+        if (!user) {
+            return res.status(404).json({ error: 'Utilisateur introuvable' });
+        }
+
+        if (user.roblox_verified) {
+            return res.json({ message: 'Compte Roblox déjà vérifié' });
+        }
+
+        try {
+            const profileRes = await fetch(`https://users.roblox.com/v1/users/${user.roblox_id}`);
+
+            if (!profileRes.ok) {
+                return res.status(500).json({ error: 'Impossible de récupérer le profil Roblox' });
+            }
+
+            const profileData = await profileRes.json();
+
+            if (profileData.description && profileData.description.includes(user.roblox_verification_code)) {
+                dbRun('UPDATE users SET roblox_verified = 1, roblox_verification_code = NULL WHERE id = ?', [user.id]);
+                return res.json({ message: 'Compte Roblox vérifié avec succès !' });
+            } else {
+                return res.status(400).json({
+                    error: 'Code de vérification non trouvé dans la description de votre profil Roblox',
+                    code: user.roblox_verification_code
+                });
+            }
+        } catch (err) {
+            console.error('[Roblox verify] Error:', err);
+            return res.status(500).json({ error: 'Impossible de vérifier le profil Roblox' });
+        }
+
+    } catch (err) {
+        console.error('Verify roblox error:', err);
+        res.status(500).json({ error: 'Erreur serveur' });
+    }
 });
 
 // ── Login ─────────────────────────────────────────────────
-document.getElementById('login-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const btn = document.getElementById('login-btn');
-    setLoading(btn, true);
-
-    const body = {
-        email: document.getElementById('login-email').value.trim(),
-        password: document.getElementById('login-password').value
-    };
-
+router.post('/login', async (req, res) => {
     try {
-        const { res, data } = await apiRequest('/api/auth/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body)
-        });
+        const { email, password } = req.body;
 
-        if (!res.ok) {
-            if (data.need_roblox_verification) {
-                pendingEmail = body.email;
-                document.getElementById('roblox-code').textContent = data.roblox_verification_code;
-                document.getElementById('roblox-verify-section').classList.remove('hidden');
-                showMessage(data.error, 'info');
-            } else {
-                showMessage(data.error || 'Connexion impossible pour le moment.', 'error');
-            }
-            setLoading(btn, false);
-            return;
+        if (!email || !password) {
+            return res.status(400).json({ error: 'Email et mot de passe requis' });
         }
 
-        localStorage.setItem('voicechat_token', data.token);
-        localStorage.setItem('voicechat_user', JSON.stringify(data.user));
-        window.location.href = '/chat';
+        const user = dbGet('SELECT * FROM users WHERE email = ?', [email]);
+        if (!user) {
+            return res.status(401).json({ error: 'Email ou mot de passe incorrect' });
+        }
+
+        const valid = await bcrypt.compare(password, user.password_hash);
+        if (!valid) {
+            return res.status(401).json({ error: 'Email ou mot de passe incorrect' });
+        }
+
+        if (!user.email_verified) {
+            return res.status(403).json({ error: 'Veuillez d\'abord vérifier votre adresse email' });
+        }
+
+        if (!user.roblox_verified) {
+            return res.status(403).json({
+                error: 'Veuillez d\'abord vérifier votre compte Roblox',
+                roblox_verification_code: user.roblox_verification_code,
+                need_roblox_verification: true
+            });
+        }
+
+        const token = generateToken(user);
+
+        res.json({
+            token,
+            user: {
+                id: user.id,
+                pseudo: user.pseudo,
+                email: user.email,
+                roblox_username: user.roblox_username
+            }
+        });
 
     } catch (err) {
-        console.error('Login request failed:', err);
-        showMessage('Erreur de connexion au serveur', 'error');
+        console.error('Login error:', err);
+        res.status(500).json({ error: 'Erreur serveur' });
     }
-
-    setLoading(btn, false);
 });
+
+// ── Get current user ──────────────────────────────────────
+router.get('/me', authMiddleware, (req, res) => {
+    const user = dbGet('SELECT id, email, pseudo, roblox_username FROM users WHERE id = ?', [req.user.id]);
+    if (!user) {
+        return res.status(404).json({ error: 'Utilisateur introuvable' });
+    }
+    res.json({ user });
+});
+
+module.exports = router;
+module.exports.authMiddleware = authMiddleware;
